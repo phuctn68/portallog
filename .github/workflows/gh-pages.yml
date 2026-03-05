@@ -2,7 +2,7 @@ name: Flutter Web Deploy
 
 on:
   push:
-    branches: [ "main" ]        # mỗi lần merge/push vào main là chạy
+    branches: [ "main" ]
 
 permissions:
   contents: write
@@ -18,7 +18,7 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.32.8'   # đúng version bạn đang dùng
+          flutter-version: '3.32.8'
           channel: 'stable'
 
       - name: Clean previous build
@@ -28,13 +28,13 @@ jobs:
         run: flutter pub get
 
       - name: Build Flutter Web
-        # repo tên portal_log => base-href nên là /portal_log/
-        run: flutter build web --release --base-href="/portal_log/"
+        # Sửa lại để khớp với thư mục static trong dự án Django của bạn
+        run: flutter build web --release --base-href="/static/heartbeat_app/"
 
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./build/web     # chỗ flutter build web xuất ra
-          publish_branch: gh-pages     # đẩy kết quả lên branch gh-pages
-          force_orphan: true           # cho nhánh gh-pages chỉ chứa file build
+          publish_dir: ./build/web
+          publish_branch: gh-pages
+          force_orphan: true

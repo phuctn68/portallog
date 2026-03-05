@@ -13,6 +13,7 @@ import 'package:pdf/widgets.dart' as pw;
 import 'package:portal_log/model/heartbeat_log_entry.dart';
 import 'package:portal_log/utils/utils.dart';
 import 'package:printing/printing.dart';
+import 'package:http/http.dart' as http; // Thêm ' as http;
 
 class LogPage extends StatefulWidget {
   const LogPage({super.key});
@@ -56,6 +57,11 @@ class _LogPageState extends State<LogPage> {
   void initState() {
     super.initState();
     _searchController.addListener(_onSearchChanged);
+    
+    // Tự động gọi API ngay khi giao diện dựng xong
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _fetchLogsFromDB();
+    });
   }
 
   @override
@@ -178,17 +184,9 @@ class _LogPageState extends State<LogPage> {
   Widget _headerView(ColorScheme scheme) => Row(
     children: [
       FilledButton.icon(
-        style: FilledButton.styleFrom(
-          backgroundColor: scheme.primary,
-          foregroundColor: scheme.onPrimary,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(999),
-          ),
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-        ),
-        onPressed: _busy ? null : _pickAndLoadFile,
-        icon: const Icon(Icons.upload_file),
-        label: const Text('Chọn file CSV'),
+        onPressed: _busy ? null : _fetchLogsFromDB, // Đổi từ chọn file sang fetch API
+        icon: const Icon(Icons.refresh), // Đổi icon cho hợp lý
+        label: const Text('Làm mới dữ liệu'),
       ),
       const SizedBox(width: 8),
       FilledButton.tonalIcon(
@@ -604,13 +602,11 @@ class _LogPageState extends State<LogPage> {
 
   void _onSearchChanged() {
     _searchDebounce?.cancel();
-    _searchDebounce = Timer(const Duration(milliseconds: 250), () async {
+    _searchDebounce = Timer(const Duration(milliseconds: 500), () async {
       if (!mounted) return;
-      final newText = _searchController.text;
-      if (newText == _searchText) return;
-
-      setState(() => _searchText = newText);
-      await _applyFilters(resetPage: true);
+      
+      // Thay vì lọc local, ta gọi lại hàm fetch từ DB để tìm trong toàn bộ database
+      _fetchLogsFromDB(); 
     });
   }
 
@@ -621,99 +617,53 @@ class _LogPageState extends State<LogPage> {
 
   // TODO: IMPORT CSV
 
-  Future<void> _pickAndLoadFile() async {
-    final result = await FilePicker.platform.pickFiles(
-      type: FileType.custom,
-      allowedExtensions: ['csv'],
-      withData: true,
-    );
-    if (result == null || result.files.isEmpty) return;
-
-    final file = result.files.single;
-    final bytes = file.bytes;
-    if (bytes == null) {
-      setState(() => _error = 'Không đọc được nội dung file (bytes null).');
-      return;
-    }
-
-    final myToken = ++_importToken;
-
+  // Thay thế hoặc sửa lại hàm nạp dữ liệu
+  Future<void> _fetchLogsFromDB() async {
     setState(() {
+      _isFileLoading = true; // Hiện loading overlay
       _error = null;
-      _loadedFileName = null;
       _allLogs = [];
-      _filteredIndices = [];
-      _currentPage = 0;
-      _fromGenDateTime = null;
-      _toGenDateTime = null;
-      _sortAscending = true;
-
-      _isFileLoading = true;
-      _importProgress = 0;
     });
 
-    await _ensureOverlayPainted();
-
     try {
-      final content = utf8.decode(bytes);
+      // Lấy thông tin search từ controller có sẵn
+      final String userId = _searchController.text.trim();
+      
+      // Gọi API Django (dùng đường dẫn tương đối)
+      // Bạn có thể truyền thêm tham số search/time nếu muốn lọc sâu hơn từ DB
+      final response = await http.get(
+        Uri.parse('/monitoring/heartbeat/logs/api?user_id=$userId')
+      );
 
-      final parsed = kIsWeb
-          ? await parseCsvOnWebChunked(
-              content,
-              shouldCancel: () => myToken != _importToken,
-              onProgress: (p) {
-                if (!mounted) return;
-                if (myToken != _importToken) return;
-                setState(() => _importProgress = p.clamp(0, 1));
-              },
-            )
-          : await compute(parseCsvInIsolate, content);
+      if (response.statusCode == 200) {
+        final List<dynamic> rawData = json.decode(response.body);
+        
+        // Map JSON về class HeartbeatLogEntry
+        final logs = rawData.map((m) => HeartbeatLogEntry(
+          createdAt: m['createdAt'] ?? '',
+          userId: m['userId'] ?? '',
+          typeData: m['typeData'] ?? 0,
+          message: m['message'] ?? '',
+          genTime: m['genTime'] ?? 0,
+          error: m['error']?.toString(),
+        )).toList();
 
-      if (!mounted || myToken != _importToken) return;
+        setState(() {
+          _allLogs = logs;
+          _loadedFileName = "Database Live";
+          _filteredIndices = List<int>.generate(logs.length, (i) => i);
+          _showUserIdColumn = true;
+        });
 
-      final String? error = parsed['error'] as String?;
-      final List<dynamic> rawLogsDynamic =
-          (parsed['logs'] as List<dynamic>?) ?? const [];
-
-      final logs = rawLogsDynamic
-          .cast<Map<String, dynamic>>()
-          .map(
-            (m) => HeartbeatLogEntry(
-              createdAt: (m['createdAt'] as String?) ?? '',
-              userId: (m['userId'] as String?) ?? '',
-              typeData: (m['typeData'] as int?) ?? 0,
-              message: (m['message'] as String?) ?? '',
-              genTime: (m['genTime'] as int?) ?? 0,
-              error: (m['error'] as String?)?.toString(),
-            ),
-          )
-          .toList();
-
-      logs.sort((a, b) => a.genTime.compareTo(b.genTime));
-
-      final hasAnyUserId = logs.any((e) => e.userId.trim().isNotEmpty);
-
-      setState(() {
-        _error = error;
-        _allLogs = logs;
-        _loadedFileName = file.name;
-        _showUserIdColumn = hasAnyUserId;
-
-        _filteredIndices = List<int>.generate(logs.length, (i) => i);
-        _currentPage = 0;
-        _importProgress = 1.0;
-      });
-
-      await _applyFilters(resetPage: true);
+        // Gọi hàm lọc local có sẵn để sắp xếp dữ liệu
+        await _applyFilters(resetPage: true);
+      } else {
+        setState(() => _error = 'Lỗi server: ${response.statusCode}');
+      }
     } catch (e) {
-      if (!mounted || myToken != _importToken) return;
-      setState(() => _error = 'Lỗi khi đọc file: $e');
+      setState(() => _error = 'Lỗi kết nối: $e');
     } finally {
-      if (!mounted || myToken != _importToken) return;
-      setState(() {
-        _isFileLoading = false;
-        _importProgress = null;
-      });
+      setState(() => _isFileLoading = false);
     }
   }
 
