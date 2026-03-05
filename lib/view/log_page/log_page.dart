@@ -602,10 +602,11 @@ class _LogPageState extends State<LogPage> {
 
   void _onSearchChanged() {
     _searchDebounce?.cancel();
+    // Tăng thời gian chờ lên 500ms để tránh gửi request liên tục khi đang gõ
     _searchDebounce = Timer(const Duration(milliseconds: 500), () async {
       if (!mounted) return;
       
-      // Thay vì lọc local, ta gọi lại hàm fetch từ DB để tìm trong toàn bộ database
+      // Quan trọng: Gọi hàm fetch từ Database thay vì lọc local
       _fetchLogsFromDB(); 
     });
   }
@@ -620,25 +621,23 @@ class _LogPageState extends State<LogPage> {
   // Thay thế hoặc sửa lại hàm nạp dữ liệu
   Future<void> _fetchLogsFromDB() async {
     setState(() {
-      _isFileLoading = true; // Hiện loading overlay
+      _isFileLoading = true;
       _error = null;
-      _allLogs = [];
     });
 
     try {
-      // Lấy thông tin search từ controller có sẵn
-      final String userId = _searchController.text.trim();
+      // 1. Lấy nội dung từ ô Search
+      final String searchText = _searchController.text.trim();
       
-      // Gọi API Django (dùng đường dẫn tương đối)
-      // Bạn có thể truyền thêm tham số search/time nếu muốn lọc sâu hơn từ DB
-      final response = await http.get(
-        Uri.parse('/monitoring/heartbeat/logs/api?user_id=$userId')
-      );
+      // 2. Xây dựng URL kèm tham số search (phải khớp với request.GET.get('search') ở Django)
+      // Nếu bạn muốn tìm theo cả user_id thì có thể tách ra hoặc gửi chung vào tham số search
+      final String url = '/monitoring/heartbeat/logs/api?search=$searchText';
+
+      final response = await http.get(Uri.parse(url));
 
       if (response.statusCode == 200) {
         final List<dynamic> rawData = json.decode(response.body);
         
-        // Map JSON về class HeartbeatLogEntry
         final logs = rawData.map((m) => HeartbeatLogEntry(
           createdAt: m['createdAt'] ?? '',
           userId: m['userId'] ?? '',
@@ -650,15 +649,12 @@ class _LogPageState extends State<LogPage> {
 
         setState(() {
           _allLogs = logs;
-          _loadedFileName = "Database Live";
           _filteredIndices = List<int>.generate(logs.length, (i) => i);
-          _showUserIdColumn = true;
         });
-
-        // Gọi hàm lọc local có sẵn để sắp xếp dữ liệu
-        await _applyFilters(resetPage: true);
+        
+        // Không cần gọi _applyFilters nữa vì Server đã lọc hộ rồi
       } else {
-        setState(() => _error = 'Lỗi server: ${response.statusCode}');
+        setState(() => _error = 'Lỗi: ${response.statusCode}');
       }
     } catch (e) {
       setState(() => _error = 'Lỗi kết nối: $e');
